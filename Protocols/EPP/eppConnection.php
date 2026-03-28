@@ -386,26 +386,95 @@ class eppConnection {
             }
             $this->sslContext = $context;
         }
-        $this->connection = stream_socket_client($this->hostname.':'.$this->port, $errno, $errstr, $this->timeout, STREAM_CLIENT_CONNECT, $this->sslContext);
-        if (is_resource($this->connection)) {
-            stream_set_blocking($this->connection, $this->blocking);
-            stream_set_timeout($this->connection, $this->timeout);
-            if ($errno == 0) {
-                $meta = stream_get_meta_data($this->connection);
-                if (isset($meta['crypto'])) {
-                    $this->writeLog("Stream opened to ".$this->getHostname()." port ".$this->getPort()." with protocol ".$meta['crypto']['protocol'].", cipher ".$meta['crypto']['cipher_name'].", ".$meta['crypto']['cipher_bits']." bits ".$meta['crypto']['cipher_version'],"Connection made");
-                } else {
-                    $this->writeLog("Stream opened to ".$this->getHostname()." port ".$this->getPort(),"Connection made");
-                }
-                $this->connected = true;
-                $this->read();
-            }
-            return $this->connected;
+        // Resolve all IP addresses for the hostname and try each one
+        $originalTarget = $this->hostname.':'.$this->port;
+        $ips = $this->resolveHostIps($this->hostname);
+
+        if (empty($ips)) {
+            // No IPs resolved — fall back to original hostname (let stream_socket_client handle it)
+            $ips = [null];
         }
 
-        $this->writeLog("Connection could not be opened: $errno $errstr","ERROR");
-        return false;
+        $errors = [];
+        foreach ($ips as $ip) {
+            if ($ip !== null) {
+                // Build target using the resolved IP, preserving any scheme prefix (ssl://, tls://, etc.)
+                $target = $this->buildTargetWithIp($this->hostname, $ip, $this->port);
+                // Set peer_name so TLS verification uses the original hostname, not the IP
+                stream_context_set_option($this->sslContext, 'ssl', 'peer_name', $this->extractHost($this->hostname));
+                $this->writeLog("Trying IP $ip for ".$this->getHostname(), "CONNECT");
+            } else {
+                $target = $originalTarget;
+            }
 
+            $this->connection = @stream_socket_client($target, $errno, $errstr, $this->timeout, STREAM_CLIENT_CONNECT, $this->sslContext);
+            if (is_resource($this->connection)) {
+                stream_set_blocking($this->connection, $this->blocking);
+                stream_set_timeout($this->connection, $this->timeout);
+                if ($errno == 0) {
+                    $meta = stream_get_meta_data($this->connection);
+                    if (isset($meta['crypto'])) {
+                        $this->writeLog("Stream opened to ".$this->getHostname()." port ".$this->getPort()." (".($ip ?: 'unresolved').") with protocol ".$meta['crypto']['protocol'].", cipher ".$meta['crypto']['cipher_name'].", ".$meta['crypto']['cipher_bits']." bits ".$meta['crypto']['cipher_version'],"Connection made");
+                    } else {
+                        $this->writeLog("Stream opened to ".$this->getHostname()." port ".$this->getPort()." (".($ip ?: 'unresolved').")","Connection made");
+                    }
+                    $this->connected = true;
+                    $this->read();
+                }
+                return $this->connected;
+            }
+
+            $errors[] = ($ip ?: $this->hostname) . ": $errno $errstr";
+            $this->writeLog("Connection to ".($ip ?: $this->hostname)." failed: $errno $errstr", "ERROR");
+        }
+
+        throw new eppException("Could not connect to ".$this->getHostname().":".$this->getPort().". All attempts failed: ".implode('; ', $errors));
+
+    }
+
+    /**
+     * Resolve all IP addresses for a hostname, stripping any scheme prefix.
+     * @param string $hostname Hostname possibly prefixed with scheme (e.g. ssl://epp.example.com)
+     * @return array List of IP addresses, or empty array if resolution fails
+     */
+    protected function resolveHostIps($hostname) {
+        $host = $this->extractHost($hostname);
+        // If the hostname is already an IP address, return it directly
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return [$host];
+        }
+        $ips = gethostbynamel($host);
+        if ($ips === false) {
+            return [];
+        }
+        return $ips;
+    }
+
+    /**
+     * Extract the bare hostname from a URI that may have a scheme prefix.
+     * @param string $hostname e.g. "ssl://epp.example.com" or "tls://epp.example.com" or "epp.example.com"
+     * @return string The bare hostname
+     */
+    protected function extractHost($hostname) {
+        if (($pos = strpos($hostname, '://')) !== false) {
+            return substr($hostname, $pos + 3);
+        }
+        return $hostname;
+    }
+
+    /**
+     * Build a connection target string replacing the hostname with a resolved IP.
+     * @param string $hostname Original hostname (possibly with scheme prefix)
+     * @param string $ip Resolved IP address
+     * @param int $port Port number
+     * @return string Connection target (e.g. "ssl://192.0.2.1:700")
+     */
+    protected function buildTargetWithIp($hostname, $ip, $port) {
+        if (($pos = strpos($hostname, '://')) !== false) {
+            $scheme = substr($hostname, 0, $pos + 3);
+            return $scheme . $ip . ':' . $port;
+        }
+        return $ip . ':' . $port;
     }
 
     /**

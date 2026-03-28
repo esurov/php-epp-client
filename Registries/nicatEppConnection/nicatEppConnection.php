@@ -67,34 +67,54 @@ abstract class nicatEppConnection extends eppConnection
         } else {
             //We don't want our error handler to kick in at this point...
 
-            $target = $this->hostname . ":" . $this->port;
-            $errno = '';
-            $errstr = '';
             putenv('SURPRESS_ERROR_HANDLER=1');
             $context = stream_context_create();
             if(!$this->doPeerVerification) {
                 stream_context_set_option($context, 'ssl', 'verify_peer', false);
                 stream_context_set_option($context, 'ssl', 'verify_peer_name', false);
             }
-            $this->connection = stream_socket_client($target, $errno, $errstr, $this->timeout, STREAM_CLIENT_CONNECT, $context);
-            putenv('SURPRESS_ERROR_HANDLER=0');
-            if (is_resource($this->connection)) {
-                $this->writeLog("Connection made","CONNECT");
-                stream_set_blocking($this->connection, false);
-                stream_set_timeout($this->connection, $this->timeout);
-                if ($errno == 0) {
-                    $this->connected = true;
-                    $this->read();
-                    return true;
-                } else {
-                    return false;
-                }
-            } else {
-                $this->writeLog("Connection could not be opened: $errno $errstr","ERROR");
-                return false;
+
+            // Resolve all IP addresses and try each one
+            $ips = $this->resolveHostIps($this->hostname);
+            if (empty($ips)) {
+                $ips = [null];
             }
+
+            $errors = [];
+            foreach ($ips as $ip) {
+                if ($ip !== null) {
+                    $target = $this->buildTargetWithIp($this->hostname, $ip, $this->port);
+                    stream_context_set_option($context, 'ssl', 'peer_name', $this->extractHost($this->hostname));
+                    $this->writeLog("Trying IP $ip for ".$this->getHostname(), "CONNECT");
+                } else {
+                    $target = $this->hostname . ":" . $this->port;
+                }
+
+                $errno = '';
+                $errstr = '';
+                $this->connection = @stream_socket_client($target, $errno, $errstr, $this->timeout, STREAM_CLIENT_CONNECT, $context);
+                if (is_resource($this->connection)) {
+                    $this->writeLog("Connection made to ".($ip ?: $this->hostname),"CONNECT");
+                    stream_set_blocking($this->connection, false);
+                    stream_set_timeout($this->connection, $this->timeout);
+                    if ($errno == 0) {
+                        $this->connected = true;
+                        $this->read();
+                        putenv('SURPRESS_ERROR_HANDLER=0');
+                        return true;
+                    } else {
+                        putenv('SURPRESS_ERROR_HANDLER=0');
+                        return false;
+                    }
+                }
+
+                $errors[] = ($ip ?: $this->hostname) . ": $errno $errstr";
+                $this->writeLog("Connection to ".($ip ?: $this->hostname)." failed: $errno $errstr", "ERROR");
+            }
+
+            putenv('SURPRESS_ERROR_HANDLER=0');
+            throw new eppException("Could not connect to ".$this->getHostname().":".$this->getPort().". All attempts failed: ".implode('; ', $errors));
         }
-        return false;
     }
 
 }
