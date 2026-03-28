@@ -80,7 +80,6 @@ abstract class nicatEppConnection extends eppConnection
                 $ips = [null];
             }
 
-            $errors = [];
             foreach ($ips as $ip) {
                 if ($ip !== null) {
                     $target = $this->buildTargetWithIp($this->hostname, $ip, $this->port);
@@ -108,12 +107,12 @@ abstract class nicatEppConnection extends eppConnection
                     }
                 }
 
-                $errors[] = ($ip ?: $this->hostname) . ": $errno $errstr";
                 $this->writeLog("Connection to ".($ip ?: $this->hostname)." failed: $errno $errstr", "ERROR");
             }
 
             putenv('SURPRESS_ERROR_HANDLER=0');
-            throw new eppException("Could not connect to ".$this->getHostname().":".$this->getPort().". All attempts failed: ".implode('; ', $errors));
+            $this->writeLog("Connection could not be opened to any resolved IP for ".$this->getHostname(), "ERROR");
+            return false;
         }
     }
 

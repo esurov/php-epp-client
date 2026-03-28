@@ -395,12 +395,9 @@ class eppConnection {
             $ips = [null];
         }
 
-        $errors = [];
         foreach ($ips as $ip) {
             if ($ip !== null) {
-                // Build target using the resolved IP, preserving any scheme prefix (ssl://, tls://, etc.)
                 $target = $this->buildTargetWithIp($this->hostname, $ip, $this->port);
-                // Set peer_name so TLS verification uses the original hostname, not the IP
                 stream_context_set_option($this->sslContext, 'ssl', 'peer_name', $this->extractHost($this->hostname));
                 $this->writeLog("Trying IP $ip for ".$this->getHostname(), "CONNECT");
             } else {
@@ -424,11 +421,11 @@ class eppConnection {
                 return $this->connected;
             }
 
-            $errors[] = ($ip ?: $this->hostname) . ": $errno $errstr";
             $this->writeLog("Connection to ".($ip ?: $this->hostname)." failed: $errno $errstr", "ERROR");
         }
 
-        throw new eppException("Could not connect to ".$this->getHostname().":".$this->getPort().". All attempts failed: ".implode('; ', $errors));
+        $this->writeLog("Connection could not be opened to any resolved IP for ".$this->getHostname(), "ERROR");
+        return false;
 
     }
 
