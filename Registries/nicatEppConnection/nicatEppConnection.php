@@ -127,9 +127,20 @@ abstract class nicatEppConnection extends eppConnection
         if (filter_var($host, FILTER_VALIDATE_IP)) {
             return [$host];
         }
-        $ips = gethostbynamel($host);
-        if ($ips === false) {
-            return [];
+        $ips = [];
+        // Resolve IPv4 (A) records
+        $a = @dns_get_record($host, DNS_A);
+        if (is_array($a)) {
+            foreach ($a as $record) {
+                $ips[] = $record['ip'];
+            }
+        }
+        // Resolve IPv6 (AAAA) records
+        $aaaa = @dns_get_record($host, DNS_AAAA);
+        if (is_array($aaaa)) {
+            foreach ($aaaa as $record) {
+                $ips[] = $record['ipv6'];
+            }
         }
         return $ips;
     }
@@ -154,11 +165,13 @@ abstract class nicatEppConnection extends eppConnection
      * @return string Connection target (e.g. "ssl://192.0.2.1:700")
      */
     protected function buildTargetWithIp($hostname, $ip, $port) {
+        // Wrap IPv6 addresses in brackets for URI notation
+        $host = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? "[$ip]" : $ip;
         if (($pos = strpos($hostname, '://')) !== false) {
             $scheme = substr($hostname, 0, $pos + 3);
-            return $scheme . $ip . ':' . $port;
+            return $scheme . $host . ':' . $port;
         }
-        return $ip . ':' . $port;
+        return $host . ':' . $port;
     }
 
 }
