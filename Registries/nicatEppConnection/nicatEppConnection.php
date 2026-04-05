@@ -116,4 +116,49 @@ abstract class nicatEppConnection extends eppConnection
         }
     }
 
+    /**
+     * Resolve all IP addresses for a hostname, stripping any scheme prefix.
+     * @param string $hostname Hostname possibly prefixed with scheme (e.g. ssl://epp.example.com)
+     * @return array List of IP addresses, or empty array if resolution fails
+     */
+    protected function resolveHostIps($hostname) {
+        $host = $this->extractHost($hostname);
+        // If the hostname is already an IP address, return it directly
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return [$host];
+        }
+        $ips = gethostbynamel($host);
+        if ($ips === false) {
+            return [];
+        }
+        return $ips;
+    }
+
+    /**
+     * Extract the bare hostname from a URI that may have a scheme prefix.
+     * @param string $hostname e.g. "ssl://epp.example.com" or "tls://epp.example.com" or "epp.example.com"
+     * @return string The bare hostname
+     */
+    protected function extractHost($hostname) {
+        if (($pos = strpos($hostname, '://')) !== false) {
+            return substr($hostname, $pos + 3);
+        }
+        return $hostname;
+    }
+
+    /**
+     * Build a connection target string replacing the hostname with a resolved IP.
+     * @param string $hostname Original hostname (possibly with scheme prefix)
+     * @param string $ip Resolved IP address
+     * @param int $port Port number
+     * @return string Connection target (e.g. "ssl://192.0.2.1:700")
+     */
+    protected function buildTargetWithIp($hostname, $ip, $port) {
+        if (($pos = strpos($hostname, '://')) !== false) {
+            $scheme = substr($hostname, 0, $pos + 3);
+            return $scheme . $ip . ':' . $port;
+        }
+        return $ip . ':' . $port;
+    }
+
 }
