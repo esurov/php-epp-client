@@ -50,8 +50,8 @@ abstract class nicatEppConnection extends eppConnection
 
 
     /**
-     * Connect to the address and port fsockopen replaces by general stream_socket_client
-     * @param string $address
+     * Connect with DNS failover: resolve all IPs and try each one
+     * @param string $hostname
      * @param int $port
      * @return boolean
      */
@@ -62,58 +62,85 @@ abstract class nicatEppConnection extends eppConnection
         if ($port) {
             $this->port = $port;
         }
-        if ($this->local_cert_path) {
-            parent::connect($hostname,$port);
-        } else {
-            //We don't want our error handler to kick in at this point...
 
-            putenv('SURPRESS_ERROR_HANDLER=1');
-            $context = stream_context_create();
-            if(!$this->doPeerVerification) {
-                stream_context_set_option($context, 'ssl', 'verify_peer', false);
-                stream_context_set_option($context, 'ssl', 'verify_peer_name', false);
-            }
-
-            // Resolve all IP addresses and try each one
-            $ips = $this->resolveHostIps($this->hostname);
-            if (empty($ips)) {
-                $ips = [null];
-            }
-
-            foreach ($ips as $ip) {
-                if ($ip !== null) {
-                    $target = $this->buildTargetWithIp($this->hostname, $ip, $this->port);
-                    stream_context_set_option($context, 'ssl', 'peer_name', $this->extractHost($this->hostname));
-                    $this->writeLog("Trying IP $ip for ".$this->getHostname(), "CONNECT");
-                } else {
-                    $target = $this->hostname . ":" . $this->port;
-                }
-
-                $errno = '';
-                $errstr = '';
-                $this->connection = @stream_socket_client($target, $errno, $errstr, $this->timeout, STREAM_CLIENT_CONNECT, $context);
-                if (is_resource($this->connection)) {
-                    $this->writeLog("Connection made to ".($ip ?: $this->hostname),"CONNECT");
-                    stream_set_blocking($this->connection, false);
-                    stream_set_timeout($this->connection, $this->timeout);
-                    if ($errno == 0) {
-                        $this->connected = true;
-                        $this->read();
-                        putenv('SURPRESS_ERROR_HANDLER=0');
-                        return true;
-                    } else {
-                        putenv('SURPRESS_ERROR_HANDLER=0');
-                        return false;
-                    }
-                }
-
-                $this->writeLog("Connection to ".($ip ?: $this->hostname)." failed: $errno $errstr", "ERROR");
-            }
-
-            putenv('SURPRESS_ERROR_HANDLER=0');
-            $this->writeLog("Connection could not be opened to any resolved IP for ".$this->getHostname(), "ERROR");
-            return false;
+        $ips = $this->resolveHostIps($this->hostname);
+        if (empty($ips)) {
+            // No IPs resolved — fall back to original hostname
+            return $this->connectTo($this->hostname, $this->port);
         }
+
+        foreach ($ips as $ip) {
+            $target = $this->buildTargetWithIp($this->hostname, $ip, $this->port);
+            $this->writeLog("Trying IP $ip for ".$this->getHostname(), "CONNECT");
+            if ($this->connectTo($target, $this->port, $ip)) {
+                return true;
+            }
+            $this->writeLog("Connection to $ip failed", "ERROR");
+        }
+
+        $this->writeLog("Connection could not be opened to any resolved IP for ".$this->getHostname(), "ERROR");
+        return false;
+    }
+
+    /**
+     * Connect to the address and port fsockopen replaces by general stream_socket_client
+     * @param string $target Connection target (hostname:port or scheme://ip:port)
+     * @param int $port
+     * @param string|null $ip The resolved IP for logging, or null if connecting by hostname
+     * @return boolean
+     */
+    protected function connectTo($target, $port, $ip = null) {
+        if ($this->local_cert_path) {
+            if ($ip !== null) {
+                // Set peer_name so TLS verification uses the original hostname, not the IP
+                if (!$this->sslContext) {
+                    $this->sslContext = stream_context_create();
+                }
+                stream_context_set_option($this->sslContext, 'ssl', 'peer_name', $this->extractHost($this->hostname));
+                // Build scheme://ip without port — parent::connect() appends :port itself
+                $host = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? "[$ip]" : $ip;
+                if (($pos = strpos($this->hostname, '://')) !== false) {
+                    $host = substr($this->hostname, 0, $pos + 3) . $host;
+                }
+                return parent::connect($host, $port);
+            }
+            return parent::connect(null, $port);
+        }
+
+        //We don't want our error handler to kick in at this point...
+        putenv('SURPRESS_ERROR_HANDLER=1');
+        $context = stream_context_create();
+        if(!$this->doPeerVerification) {
+            stream_context_set_option($context, 'ssl', 'verify_peer', false);
+            stream_context_set_option($context, 'ssl', 'verify_peer_name', false);
+        }
+
+        if ($ip !== null) {
+            stream_context_set_option($context, 'ssl', 'peer_name', $this->extractHost($this->hostname));
+        } else {
+            $target = $this->hostname . ":" . $this->port;
+        }
+
+        $errno = '';
+        $errstr = '';
+        $this->connection = @stream_socket_client($target, $errno, $errstr, $this->timeout, STREAM_CLIENT_CONNECT, $context);
+        if (is_resource($this->connection)) {
+            $this->writeLog("Connection made to ".($ip ?: $this->hostname),"CONNECT");
+            stream_set_blocking($this->connection, false);
+            stream_set_timeout($this->connection, $this->timeout);
+            if ($errno == 0) {
+                $this->connected = true;
+                $this->read();
+                putenv('SURPRESS_ERROR_HANDLER=0');
+                return true;
+            } else {
+                putenv('SURPRESS_ERROR_HANDLER=0');
+                return false;
+            }
+        }
+
+        putenv('SURPRESS_ERROR_HANDLER=0');
+        return false;
     }
 
     /**
